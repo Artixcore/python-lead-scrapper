@@ -299,13 +299,52 @@ def _region_from_country(country: str | None) -> str | None:
 
 
 def build_default_lead_service(db: SQLiteDB | None = None) -> LeadService:
-    """Factory that wires up the default pipeline."""
-    from app.scraping.sources.osm_source import OSMSource
+    """Factory that wires up the default pipeline.
+
+    Source registration order:
+
+    1. Zero-config, no-key sources (OSM Overpass, Nominatim free-text,
+       Wikidata SPARQL, placeholder DirectorySource).
+    2. Keyed sources (Yelp / HERE / Foursquare) only if their API key is
+       present in settings.
+    3. Google Maps scraper only if ``ENABLE_GOOGLE_MAPS`` is true.
+    """
     from app.scraping.sources.directory_source import DirectorySource
+    from app.scraping.sources.foursquare_source import FoursquareSource
+    from app.scraping.sources.google_maps_source import GoogleMapsSource
+    from app.scraping.sources.here_source import HereSource
+    from app.scraping.sources.nominatim_poi_source import NominatimPOISource
+    from app.scraping.sources.osm_source import OSMSource
+    from app.scraping.sources.wikidata_source import WikidataSource
+    from app.scraping.sources.yelp_source import YelpSource
 
     manager = SourceManager()
+
+    # No-key / zero-config sources.
     manager.register(OSMSource())
+    manager.register(NominatimPOISource())
+    manager.register(WikidataSource())
     manager.register(DirectorySource())
+
+    # Keyed sources: skipped silently when the key is empty.
+    if settings.yelp_api_key:
+        manager.register(YelpSource(settings.yelp_api_key))
+    if settings.here_api_key:
+        manager.register(HereSource(settings.here_api_key))
+    if settings.foursquare_api_key:
+        manager.register(FoursquareSource(settings.foursquare_api_key))
+
+    # Google Maps scraping (disabled by default; see source docstring for
+    # ToS/reliability caveats).
+    if settings.enable_google_maps:
+        log.warning(
+            "Google Maps scraping is enabled. This may violate Google's "
+            "Terms of Service and is fragile by design."
+        )
+        manager.register(GoogleMapsSource())
+
+    names = [s.name for s in manager.sources]
+    log.info("Registered %d lead sources: %s", len(names), ", ".join(names))
 
     cache = CacheService(db) if db is not None else None
     enricher = WebsiteEnricher(cache=cache)

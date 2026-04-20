@@ -55,6 +55,23 @@ class Settings(BaseSettings):
         default="https://overpass-api.de/api/interpreter", alias="OVERPASS_URL"
     )
 
+    # Wikidata endpoint
+    wikidata_sparql_url: str = Field(
+        default="https://query.wikidata.org/sparql", alias="WIKIDATA_SPARQL_URL"
+    )
+
+    # Third-party place-search APIs (all optional; the source simply does not
+    # register when its key is empty).
+    yelp_api_key: str = Field(default="", alias="YELP_API_KEY")
+    here_api_key: str = Field(default="", alias="HERE_API_KEY")
+    foursquare_api_key: str = Field(default="", alias="FOURSQUARE_API_KEY")
+
+    # Google Maps scraping.  Disabled by default: Google's ToS forbids
+    # automated access, and the HTML format changes frequently.  Turn on at
+    # your own risk.
+    enable_google_maps: bool = Field(default=False, alias="ENABLE_GOOGLE_MAPS")
+    google_maps_hl: str = Field(default="en", alias="GOOGLE_MAPS_HL")
+
     # Health endpoint
     enable_health_endpoint: bool = Field(default=False, alias="ENABLE_HEALTH_ENDPOINT")
     health_host: str = Field(default="127.0.0.1", alias="HEALTH_HOST")

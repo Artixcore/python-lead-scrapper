@@ -13,14 +13,16 @@ back to the user in Telegram.
 
 1. Listens for user messages via a Telegram bot.
 2. Parses the natural-language request into a structured `LeadRequest`.
-3. Searches public business / place sources (OpenStreetMap Nominatim & Overpass).
+3. Queries multiple public business / place sources in parallel (see
+   [Sources](#sources) below).
 4. Visits each business's public website (homepage + contact/about pages).
 5. Extracts publicly visible emails, phone numbers, social links, and metadata.
 6. Cleans, normalizes, deduplicates, and scores every lead.
 7. Replies with a concise summary and attaches a full CSV.
 
-Only publicly visible data from legal/compliant sources is collected. The bot
-does NOT bypass authentication, paywalls, anti-bot measures, or CAPTCHAs.
+Only publicly visible data from legal/compliant sources is collected by
+default. The bot does NOT bypass authentication, paywalls, anti-bot measures,
+or CAPTCHAs.
 
 ---
 
@@ -106,9 +108,16 @@ project_root/
       base.py               # Source adapter interface
       source_manager.py     # Orchestrates multiple sources
       sources/
-        osm_source.py
+        osm_source.py           # OSM Overpass (tag-based)
+        nominatim_poi_source.py # Nominatim free-text POI search
+        wikidata_source.py      # Wikidata SPARQL
+        yelp_source.py          # Yelp Fusion (optional key)
+        here_source.py          # HERE Places (optional key)
+        foursquare_source.py    # Foursquare Places v3 (optional key)
+        google_maps_source.py   # Google local-pack scraper (opt-in)
         website_enricher.py
         directory_source.py
+        _geocoder.py            # Shared Nominatim lat/lon cache
       extractors/
         email_extractor.py
         phone_extractor.py
@@ -140,6 +149,46 @@ project_root/
   requirements.txt
   README.md
 ```
+
+---
+
+## Sources
+
+The bot runs every registered source concurrently, merges the candidates,
+deduplicates them, and then enriches each one. Add or remove sources via
+environment variables; keyless sources always run, keyed sources auto-register
+only when their key is present.
+
+| Source              | Needs key? | Env var              | Free tier / notes                                      |
+|---------------------|------------|----------------------|--------------------------------------------------------|
+| OpenStreetMap       | no         | -                    | Overpass query by OSM tag; global coverage, varies     |
+| Nominatim POI       | no         | -                    | Free-text POI search; complements OSM for fuzzy terms  |
+| Wikidata SPARQL     | no         | -                    | Notable organizations only; no coverage for SMBs       |
+| Yelp Fusion         | **yes**    | `YELP_API_KEY`       | 500 calls/day free; best for US/CA/AU                  |
+| HERE Places         | **yes**    | `HERE_API_KEY`       | ~250k transactions/month free; global                  |
+| Foursquare Places   | **yes**    | `FOURSQUARE_API_KEY` | Generous free tier; rich socials/phone/website fields  |
+| Google Maps (scrape)| no (opt-in)| `ENABLE_GOOGLE_MAPS` | **Off by default** - see warning below                 |
+
+Get API keys from:
+
+- Yelp: <https://docs.developer.yelp.com/docs/fusion-intro>
+- HERE: <https://developer.here.com/>
+- Foursquare: <https://location.foursquare.com/developer/>
+
+### Google Maps scraping disclaimer
+
+Enabling `ENABLE_GOOGLE_MAPS=true` tells the bot to scrape Google's local-
+search HTML. This has two significant caveats:
+
+1. **Google's Terms of Service forbid automated scraping.** Use at your own
+   legal risk. The official Google Places API is the only compliant path; if
+   you have a Places API key, consider wiring a new adapter that calls it
+   instead.
+2. **Google changes its HTML frequently.** The scraper is defensive (returns
+   zero leads with a warning log on layout drift rather than crashing), but
+   expect it to break periodically and require maintenance.
+
+The source is **off by default**. All other sources above work without it.
 
 ---
 
