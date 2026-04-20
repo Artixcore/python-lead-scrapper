@@ -8,13 +8,50 @@ from app.models.scrape_result import ScrapeResult
 
 
 WELCOME = (
-    "Hi! I am a lead-generation bot. \n\n"
-    "Tell me what kind of businesses you want to find and where. Examples:\n"
+    "Hi! I am a lead-generation bot.\n\n"
+    "Tap *New Lead Search* for a guided wizard, or just type a request like:\n"
     "  - Find 20 dentists in Dallas with email and website\n"
     "  - Find real estate agencies in London\n"
-    "  - Get 50 software companies in Berlin with phone numbers\n"
-    "  - Need restaurants in Paris\n\n"
-    "Send /help for more details or /example for sample queries."
+    "  - Get 50 software companies in Berlin with phone numbers\n\n"
+    "Other commands: /new /help /example /cancel"
+)
+
+
+# ---------------------------------------------------------------------------
+# Wizard prompts
+# ---------------------------------------------------------------------------
+
+WIZ_CHOOSE_TYPE = "What type of business leads do you need?"
+
+WIZ_CUSTOM_TYPE = (
+    "Send me the business type you're looking for (e.g. *plumbers*, "
+    "*coffee shops*, *pet stores*)."
+)
+
+WIZ_ENTER_LOCATION = (
+    "Got it: *{keyword}*.\n\n"
+    "Now, where should I search? Send a city and/or country.\n"
+    "_Examples: Dallas, USA  |  Paris  |  Berlin, Germany_"
+)
+
+WIZ_CHOOSE_COUNT = "How many leads would you like?"
+
+WIZ_CHOOSE_REQS = (
+    "Any required fields? Tap to toggle, then press *Done*.\n"
+    "Leads without the selected fields will be dropped."
+)
+
+WIZ_CONFIRM = (
+    "*Review your search*\n\n"
+    "- {count} *{keyword}* in *{location}*\n"
+    "- Required fields: {reqs}\n\n"
+    "Tap *Start Search* to run."
+)
+
+WIZ_CANCELLED = "Cancelled. Tap *New Lead Search* or type a request anytime."
+
+WIZ_INVALID_LOCATION = (
+    "I couldn't parse that location. Try something like 'Dallas, USA' or 'Paris'."
 )
 
 HELP = (

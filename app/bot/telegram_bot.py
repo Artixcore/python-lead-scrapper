@@ -7,6 +7,7 @@ from typing import Awaitable, Callable
 from telegram.ext import (
     Application,
     ApplicationBuilder,
+    CallbackQueryHandler,
     CommandHandler,
     MessageHandler,
     filters,
@@ -16,9 +17,11 @@ from app.bot.handlers import (
     example,
     handle_text,
     help_cmd,
+    menu_callback,
     on_error,
     start,
 )
+from app.bot.wizard import build_wizard_handler
 from app.config import settings
 from app.logging_config import get_logger
 from app.services.lead_service import LeadService
@@ -60,10 +63,26 @@ def build_application(
     # Stash shared services in bot_data so handlers can reach them without globals.
     app.bot_data["lead_service"] = lead_service
 
+    # ---- Commands ----
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("example", example))
-    # Any non-command text message is treated as a lead request.
+
+    # ---- Guided wizard (must be registered BEFORE the global text handler so
+    # its MessageHandlers win when the user is mid-conversation) ----
+    app.add_handler(build_wizard_handler())
+
+    # ---- Menu callbacks (everything except menu:new and wizard:* which the
+    # wizard owns) ----
+    app.add_handler(
+        CallbackQueryHandler(
+            menu_callback,
+            pattern=r"^menu:(examples|help|main)$",
+        )
+    )
+
+    # ---- Free-text fallback: any non-command text not consumed by the wizard
+    # is treated as a natural-language lead request. ----
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
     app.add_error_handler(on_error)
