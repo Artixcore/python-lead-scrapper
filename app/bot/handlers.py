@@ -15,10 +15,12 @@ from telegram.ext import ContextTypes
 
 from app.bot import messages
 from app.bot.keyboards import after_job_kb, main_menu_kb
+from app.bot.progress_reporter import ProgressReporter
 from app.logging_config import get_logger
 from app.models.lead_request import LeadRequest
 from app.parsing.request_parser import ParseError, parse_request
 from app.services.lead_service import LeadService
+from app.services.progress import Progress, render_progress
 
 log = get_logger(__name__)
 
@@ -207,33 +209,43 @@ async def _execute_job(
         parse_mode=ParseMode.MARKDOWN,
     )
 
-    async def progress(msg: str) -> None:
+    # One message, edited in place with a live progress bar. Throttled to
+    # at most ~1 edit/sec per message (see ProgressReporter).
+    reporter = ProgressReporter(context, chat_id)
+
+    async def on_progress(p: Progress) -> None:
         try:
             await context.bot.send_chat_action(
                 chat_id=chat_id, action=ChatAction.TYPING
             )
-            if any(
-                msg.startswith(pref)
-                for pref in ("Searching", "Deduplicating", "Enriching", "Scoring")
-            ):
-                await context.bot.send_message(
-                    chat_id=chat_id, text=messages.format_progress(msg)
-                )
         except Exception:  # pragma: no cover
-            log.debug("Progress update failed.")
+            pass
+        await reporter.update(p)
 
     try:
         result, csv_path = await service.run(
-            request, user_id=user_id, progress=progress
+            request, user_id=user_id, progress=on_progress
         )
     except Exception as e:
         log.exception("Pipeline failed: %s", e)
+        await reporter.finish(render_progress(Progress(100, "Failed")))
         await _safe_send(
             context,
             chat_id,
             "Sorry, something went wrong while running your request. Please try again.",
         )
         return
+
+    # Make sure the progress bar ends at 100%.
+    await reporter.finish(
+        render_progress(
+            Progress(
+                100,
+                "Done",
+                f"{result.total_cleaned} leads ready",
+            )
+        )
+    )
 
     # Summary
     await _safe_send(

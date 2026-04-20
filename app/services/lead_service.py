@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import Awaitable, Callable
 
 from app.config import settings
 from app.db.sqlite import SQLiteDB
@@ -31,6 +30,7 @@ from app.scraping.sources.website_enricher import WebsiteEnricher
 from app.services.cache_service import CacheService
 from app.services.dedupe_service import DedupeService
 from app.services.export_service import ExportService
+from app.services.progress import Progress, ProgressCb, stage_percent
 from app.services.scoring_service import ScoringService
 from app.utils.url_tools import normalize_url
 from app.utils.validators import (
@@ -40,9 +40,6 @@ from app.utils.validators import (
 )
 
 log = get_logger(__name__)
-
-
-ProgressCb = Callable[[str], Awaitable[None]]
 
 
 class LeadService:
@@ -76,15 +73,23 @@ class LeadService:
         user_id: int | None = None,
         progress: ProgressCb | None = None,
     ) -> tuple[ScrapeResult, Path]:
-        """Run the pipeline and return (result, csv_path)."""
+        """Run the pipeline and return (result, csv_path).
 
-        async def _notify(msg: str) -> None:
-            log.info(msg)
+        ``progress`` is an optional async callback that receives
+        :class:`Progress` snapshots at every stage (and after each enriched
+        lead).  The callback must not raise; if it does, the error is logged
+        and the pipeline continues.
+        """
+
+        async def _notify(p: Progress) -> None:
+            log.info("[%d%%] %s%s", p.percent, p.stage, f" - {p.detail}" if p.detail else "")
             if progress:
                 try:
-                    await progress(msg)
+                    await progress(p)
                 except Exception:  # pragma: no cover
                     log.debug("Progress callback raised; ignoring.")
+
+        await _notify(Progress(stage_percent("Starting"), "Starting"))
 
         job_id: int | None = None
         if self._db is not None:
@@ -94,24 +99,43 @@ class LeadService:
                 log.warning("Could not create job row: %s", e)
 
         async with HTTPClient() as http:
-            await _notify("Searching public sources...")
+            await _notify(Progress(stage_percent("Discovering", 0.0), "Discovering", "searching public sources"))
             raw_leads = await self._sources.collect(request, http)
             total_found = len(raw_leads)
             log.info("Discovery: %d raw leads from all sources.", total_found)
+            await _notify(
+                Progress(
+                    stage_percent("Discovering", 1.0),
+                    "Discovering",
+                    f"{total_found} candidates",
+                )
+            )
 
             # Clean + validate before dedupe so dedupe keys are reliable.
             raw_leads = [self._clean_raw_lead(l, request) for l in raw_leads]
 
-            await _notify(f"Deduplicating {total_found} candidates...")
+            await _notify(
+                Progress(
+                    stage_percent("Deduplicating", 0.0),
+                    "Deduplicating",
+                    f"{total_found} candidates",
+                )
+            )
             deduped = self._dedupe.dedupe(raw_leads)
             log.info("Dedupe: %d unique leads.", len(deduped))
+            await _notify(
+                Progress(
+                    stage_percent("Deduplicating", 1.0),
+                    "Deduplicating",
+                    f"{len(deduped)} unique",
+                )
+            )
 
             # Cap the candidates we bother enriching (save time on huge results).
             enrich_cap = max(request.max_leads * 2, request.max_leads + 10)
             to_enrich = deduped[:enrich_cap]
 
-            await _notify(f"Enriching {len(to_enrich)} websites...")
-            enriched = await self._enrich_many(to_enrich, http)
+            enriched = await self._enrich_many(to_enrich, http, _notify)
 
             # Post-enrichment cleanup (extractor output may need re-normalizing)
             enriched = [self._clean_enriched_lead(l, request) for l in enriched]
@@ -119,15 +143,23 @@ class LeadService:
             # Apply required-field filters, if requested
             filtered = self._apply_required_filters(enriched, request)
 
-            await _notify("Scoring and sorting...")
+            await _notify(Progress(stage_percent("Scoring", 0.0), "Scoring"))
             self._scorer.score_leads(filtered, request)
             filtered.sort(key=lambda l: l.lead_score, reverse=True)
+            await _notify(Progress(stage_percent("Scoring", 1.0), "Scoring"))
 
             final = filtered[: request.max_leads]
 
             result = ScrapeResult.build(request=request, found=total_found, leads=final)
 
         # ---- export + persist ----
+        await _notify(
+            Progress(
+                stage_percent("Exporting", 0.0),
+                "Exporting",
+                f"{len(final)} leads",
+            )
+        )
         csv_path = self._exporter.export_leads(final, request)
 
         if self._db is not None and job_id is not None:
@@ -142,6 +174,8 @@ class LeadService:
             except Exception as e:  # pragma: no cover
                 log.warning("Could not persist job %s: %s", job_id, e)
 
+        await _notify(Progress(100, "Done", f"{len(final)} leads ready"))
+
         return result, csv_path
 
     # ------------------------------------------------------------------ #
@@ -152,22 +186,59 @@ class LeadService:
         self,
         leads: list[Lead],
         http: HTTPClient,
+        notify: ProgressCb | None = None,
     ) -> list[Lead]:
-        """Enrich leads concurrently, respecting the shared rate limiter."""
+        """Enrich leads concurrently, respecting the shared rate limiter.
+
+        Fires per-completion progress updates via ``notify`` so the caller can
+        redraw a progress bar in real time.  Order of returned leads matches
+        the input order.
+        """
         if not leads:
+            if notify:
+                await notify(
+                    Progress(stage_percent("Enriching", 1.0), "Enriching", "0 websites")
+                )
             return []
 
         semaphore = asyncio.Semaphore(settings.max_concurrent_requests)
+        total = len(leads)
 
-        async def _task(l: Lead) -> Lead:
+        async def _task(idx: int, l: Lead) -> tuple[int, Lead]:
             async with semaphore:
                 try:
-                    return await self._enricher.enrich(l, http)
+                    out = await self._enricher.enrich(l, http)
                 except Exception as e:  # pragma: no cover
                     log.debug("Enrichment error for %r: %s", l.company_name, e)
-                    return l
+                    out = l
+            return idx, out
 
-        return await asyncio.gather(*[_task(l) for l in leads])
+        if notify:
+            await notify(
+                Progress(
+                    stage_percent("Enriching", 0.0),
+                    "Enriching",
+                    f"0 / {total} websites",
+                )
+            )
+
+        results: list[Lead | None] = [None] * total
+        tasks = [asyncio.create_task(_task(i, l)) for i, l in enumerate(leads)]
+        done = 0
+        for coro in asyncio.as_completed(tasks):
+            idx, out = await coro
+            results[idx] = out
+            done += 1
+            if notify:
+                await notify(
+                    Progress(
+                        stage_percent("Enriching", done / total),
+                        "Enriching",
+                        f"{done} / {total} websites",
+                    )
+                )
+
+        return [l for l in results if l is not None]
 
     def _clean_raw_lead(self, lead: Lead, request: LeadRequest) -> Lead:
         """Normalize obvious fields on a freshly-discovered lead."""
