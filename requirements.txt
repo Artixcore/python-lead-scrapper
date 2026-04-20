@@ -1,4 +1,5 @@
-# Telegram Lead Generation Bot - Dependencies
+# Telegram Lead Generation Bot - Dependencies./venv/Scripts/python.exe -m app.main
+
 # Python 3.11+ supported. For the smoothest install, use Python 3.11 - 3.13.
 # Python 3.14 also works, but requires the newer pinned versions below
 # (older pydantic-core / lxml have no 3.14 wheels).
